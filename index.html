@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Foldable RSS Reader ✨</title>
+    <title>Foldable RSS Reader ✨ (Cloud Sync)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;800&display=swap');
@@ -117,16 +117,19 @@
             height: auto;
             box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         }
-        #reader-body iframe {
-            width: 100%;
-            aspect-ratio: 16/9;
-            border-radius: 12px;
-            margin: 1.5rem 0;
-        }
         
-        /* Hide scrollbars but keep functionality */
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .sync-badge {
+            font-size: 8px;
+            background: #22c55e;
+            color: white;
+            padding: 2px 4px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-left: 8px;
+        }
     </style>
 </head>
 <body class="bg-slate-50">
@@ -144,7 +147,10 @@
                     <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white">
                         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"></path><path d="M4 4a16 16 0 0 1 16 16"></path><circle cx="5" cy="19" r="1"></circle></svg>
                     </div>
-                    <h1 class="font-extrabold text-xl tracking-tight text-slate-900">FoldRSS</h1>
+                    <div>
+                        <h1 class="font-extrabold text-xl tracking-tight text-slate-900">FoldRSS</h1>
+                        <span id="sync-status" class="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Local Mode</span>
+                    </div>
                 </div>
                 <div class="flex items-center gap-1">
                     <button id="toggle-read-filter" onclick="toggleReadVisibility()" class="p-2 text-slate-400 hover:text-indigo-600 transition-colors" title="Toggle Hidden Read Articles">
@@ -248,7 +254,10 @@
     <div id="settings-modal" class="fixed inset-0 z-[100] hidden flex items-center justify-center p-4 modal-overlay">
         <div class="bg-white rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <header class="p-6 border-b flex items-center justify-between">
-                <h2 class="text-xl font-black text-slate-900">Manage Feeds</h2>
+                <div>
+                    <h2 class="text-xl font-black text-slate-900">Manage Feeds</h2>
+                    <p id="user-display" class="text-[10px] text-slate-400 font-mono"></p>
+                </div>
                 <button onclick="toggleSettings()" class="p-2 hover:bg-slate-100 rounded-full">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
                 </button>
@@ -275,17 +284,6 @@
                     </div>
                 </div>
 
-                <!-- OPML Import -->
-                <div>
-                    <h3 class="text-xs font-black uppercase text-slate-400 mb-3 tracking-widest">Import File (.opml, .xml)</h3>
-                    <label id="drop-zone" class="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-slate-200 rounded-2xl cursor-pointer hover:bg-indigo-50 hover:border-indigo-200 transition-all">
-                        <div id="import-status" class="flex flex-col items-center justify-center">
-                            <p class="text-xs text-slate-500"><span class="font-bold">Click to upload OPML</span> or drag and drop</p>
-                        </div>
-                        <input type="file" id="opml-input" class="hidden" accept=".opml,.xml,.rss" onchange="handleOPMLUpload(event)" />
-                    </label>
-                </div>
-
                 <!-- Feed List -->
                 <div>
                     <h3 class="text-xs font-black uppercase text-slate-400 mb-3 tracking-widest">Active Subscriptions</h3>
@@ -300,7 +298,20 @@
         </div>
     </div>
 
-    <script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, updateDoc, collection, query, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Configuration from environment
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-rss-app';
+        
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
         const apiKey = ""; 
         const modelName = "gemini-2.5-flash-preview-09-2025";
         
@@ -311,7 +322,6 @@
             { url: 'https://www.wired.com/feed/rss', category: 'News' }
         ];
 
-        // Category Color Mapping
         const CATEGORY_COLORS = {
             'Tech': { bg: 'bg-indigo-500', text: 'text-indigo-600', light: 'bg-indigo-50' },
             'News': { bg: 'bg-emerald-500', text: 'text-emerald-600', light: 'bg-emerald-50' },
@@ -326,23 +336,82 @@
         }
 
         let state = {
-            feeds: JSON.parse(localStorage.getItem('rss_feeds_v2')) || DEFAULT_FEEDS,
+            feeds: [...DEFAULT_FEEDS],
             articles: [],
-            readArticles: new Set(JSON.parse(localStorage.getItem('rss_read_v2') || '[]')),
+            readArticles: new Set(),
             selectedArticleId: null,
             isRefreshing: false,
             chatHistory: [],
             selectedCategory: 'All',
-            showRead: false
+            showRead: false,
+            user: null
         };
 
-        // --- Read State Management ---
+        // --- Firebase Integration ---
 
-        function toggleReadVisibility() {
+        const initAuth = async () => {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                state.user = user;
+                document.getElementById('sync-status').innerText = "Cloud Sync Active";
+                document.getElementById('sync-status').classList.add('text-indigo-600');
+                document.getElementById('user-display').innerText = `ID: ${user.uid}`;
+                setupSyncListeners();
+            }
+        });
+
+        const setupSyncListeners = () => {
+            if (!state.user) return;
+            
+            // Sync Feeds
+            const feedDoc = doc(db, 'artifacts', appId, 'users', state.user.uid, 'settings', 'feeds');
+            onSnapshot(feedDoc, (docSnap) => {
+                if (docSnap.exists()) {
+                    state.feeds = docSnap.data().list || DEFAULT_FEEDS;
+                    renderSettingsFeedList();
+                    renderCategoriesFilter();
+                    fetchFeeds();
+                } else {
+                    // Save defaults if nothing exists
+                    setDoc(feedDoc, { list: DEFAULT_FEEDS });
+                }
+            }, (err) => console.error("Feed Sync Error", err));
+
+            // Sync Read History
+            const readDoc = doc(db, 'artifacts', appId, 'users', state.user.uid, 'settings', 'readHistory');
+            onSnapshot(readDoc, (docSnap) => {
+                if (docSnap.exists()) {
+                    state.readArticles = new Set(docSnap.data().ids || []);
+                    renderArticles();
+                }
+            }, (err) => console.error("Read Sync Error", err));
+        };
+
+        const updateFeedsOnCloud = async (newList) => {
+            if (!state.user) return;
+            const feedDoc = doc(db, 'artifacts', appId, 'users', state.user.uid, 'settings', 'feeds');
+            await setDoc(feedDoc, { list: newList });
+        };
+
+        const updateReadOnCloud = async () => {
+            if (!state.user) return;
+            const readDoc = doc(db, 'artifacts', appId, 'users', state.user.uid, 'settings', 'readHistory');
+            await setDoc(readDoc, { ids: [...state.readArticles] });
+        };
+
+        // --- Core Application Logic (Modified for Sync) ---
+
+        window.toggleReadVisibility = () => {
             state.showRead = !state.showRead;
             const eyeIcon = document.getElementById('eye-icon');
             const btn = document.getElementById('toggle-read-filter');
-            
             if (state.showRead) {
                 eyeIcon.innerHTML = `<path d="M9.88 9.88l-3.29-3.29m7.53 7.53l3.29 3.29M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68M6.61 6.61A13.52 13.52 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61M12 9a3 3 0 0 1 3 3m-3-3a3 3 0 0 0-3 3"></path><line x1="2" y1="2" x2="22" y2="22"></line>`;
                 btn.classList.add('text-indigo-600');
@@ -351,38 +420,64 @@
                 btn.classList.remove('text-indigo-600');
             }
             renderArticles();
-        }
+        };
 
-        function markAsRead(id) {
+        window.markAsRead = async (id) => {
             state.readArticles.add(id);
-            localStorage.setItem('rss_read_v2', JSON.stringify([...state.readArticles]));
             renderArticles();
-        }
+            await updateReadOnCloud();
+        };
 
-        function clearReadState() {
-            if(confirm("Clear read history?")) {
+        window.clearReadState = async () => {
+            if(confirm("Clear read history across all devices?")) {
                 state.readArticles = new Set();
-                localStorage.removeItem('rss_read_v2');
                 renderArticles();
+                await updateReadOnCloud();
             }
-        }
+        };
 
-        // --- Feed Management ---
-
-        function toggleSettings() {
+        window.toggleSettings = () => {
             const modal = document.getElementById('settings-modal');
             modal.classList.toggle('hidden');
             if (!modal.classList.contains('hidden')) {
                 renderSettingsFeedList();
                 updateCategoryOptions();
             }
-        }
+        };
 
         document.getElementById('new-feed-category').addEventListener('change', function(e) {
             const customInput = document.getElementById('custom-category-input');
             if (e.target.value === 'Custom') customInput.classList.remove('hidden');
             else customInput.classList.add('hidden');
         });
+
+        window.addFeedManual = async () => {
+            const input = document.getElementById('new-feed-url');
+            const catSelect = document.getElementById('new-feed-category');
+            const customCatInput = document.getElementById('custom-category-input');
+            const url = input.value.trim();
+            let category = catSelect.value === 'Custom' ? customCatInput.value.trim() : catSelect.value;
+            if (!category) category = "General";
+            if (url && !state.feeds.find(f => f.url === url)) {
+                const newList = [...state.feeds, { url, category }];
+                await updateFeedsOnCloud(newList);
+                input.value = '';
+                customCatInput.value = '';
+                customCatInput.classList.add('hidden');
+                catSelect.value = "General";
+            }
+        };
+
+        window.removeFeed = async (index) => {
+            const newList = state.feeds.filter((_, i) => i !== index);
+            await updateFeedsOnCloud(newList);
+        };
+
+        window.resetFeeds = async () => {
+            if(confirm("Reset all feeds to default?")) {
+                await updateFeedsOnCloud(DEFAULT_FEEDS);
+            }
+        };
 
         function updateCategoryOptions() {
             const select = document.getElementById('new-feed-category');
@@ -393,6 +488,12 @@
             select.innerHTML = allCats.map(cat => `<option value="${cat}">${cat}</option>`).join('') + '<option value="Custom">+ Add New Category</option>';
             select.value = currentVal;
         }
+
+        window.selectCategory = (cat) => {
+            state.selectedCategory = cat;
+            renderCategoriesFilter();
+            renderArticles();
+        };
 
         function renderCategoriesFilter() {
             const container = document.getElementById('categories-filter');
@@ -409,11 +510,175 @@
             `;}).join('');
         }
 
-        function selectCategory(cat) {
-            state.selectedCategory = cat;
-            renderCategoriesFilter();
-            renderArticles();
+        async function fetchFeeds() {
+            if (state.feeds.length === 0) { state.articles = []; renderArticles(); return; }
+            state.isRefreshing = true;
+            const refreshIcon = document.getElementById('refresh-icon');
+            if (refreshIcon) refreshIcon.classList.add('animate-spin');
+            try {
+                let allItems = [];
+                const results = await Promise.all(state.feeds.map(feed => 
+                    fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}`)
+                        .then(r => r.json())
+                        .then(data => ({ ...data, feedCategory: feed.category }))
+                        .catch(() => ({ status: 'error' }))
+                ));
+                results.forEach(res => {
+                    if (res.status === 'ok') {
+                        allItems.push(...res.items.map(item => ({
+                            ...item,
+                            id: item.guid || item.link,
+                            feedTitle: res.feed.title || new URL(item.link).hostname,
+                            category: res.feedCategory
+                        })));
+                    }
+                });
+                allItems.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+                state.articles = allItems;
+            } catch (e) { console.error(e); } 
+            finally {
+                state.isRefreshing = false;
+                if (refreshIcon) refreshIcon.classList.remove('animate-spin');
+                renderArticles();
+            }
         }
+
+        // --- AI Helpers ---
+
+        async function callGemini(prompt, systemInstruction = "") {
+            let retries = 0;
+            const maxRetries = 5;
+            const run = async () => {
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        systemInstruction: { parts: [{ text: systemInstruction }] }
+                    })
+                });
+                const data = await response.json();
+                return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response.";
+            };
+            while (retries < maxRetries) {
+                try { return await run(); } catch (e) {
+                    retries++;
+                    await new Promise(res => setTimeout(res, Math.pow(2, retries) * 1000));
+                }
+            }
+        }
+
+        window.generateSummary = async () => {
+            const article = state.articles.find(a => a.id === state.selectedArticleId);
+            const summaryBox = document.getElementById('ai-summary');
+            const summaryText = document.getElementById('summary-text');
+            summaryBox.classList.remove('hidden');
+            summaryText.innerHTML = `<div class="flex items-center gap-2 text-xs"><div class="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div> Summarizing...</div>`;
+            summaryBox.scrollIntoView({ behavior: 'smooth' });
+            const prompt = `3-bullet summary for: ${article.content || article.description}`;
+            const summary = await callGemini(prompt, "Professional news analyst briefing.");
+            summaryText.innerHTML = summary.replace(/\n/g, '<br>').replace(/- /g, '• ');
+        };
+
+        async function analyzeSentiment(article) {
+            const sentimentEl = document.getElementById('ai-sentiment');
+            const result = await callGemini(`Sentiment (POSITIVE, NEUTRAL, CRITICAL) for: ${article.title}`, "Media sentiment classifier.");
+            const label = result.trim().toUpperCase();
+            sentimentEl.classList.remove('hidden');
+            let theme = label.includes("POSITIVE") ? "bg-emerald-50 text-emerald-700 border-emerald-200" : 
+                        label.includes("CRITICAL") ? "bg-rose-50 text-rose-700 border-rose-200" : 
+                        "bg-slate-50 text-slate-700 border-slate-200";
+            sentimentEl.className = `inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold border ${theme}`;
+            sentimentEl.innerText = `✨ AI SENTIMENT: ${label}`;
+        }
+
+        window.handleChat = async () => {
+            const input = document.getElementById('ai-chat-input');
+            const query = input.value.trim();
+            if (!query) return;
+            state.chatHistory.push({ role: 'user', text: query });
+            input.value = "";
+            renderChat();
+            const article = state.articles.find(a => a.id === state.selectedArticleId);
+            const prompt = `Context: ${article.content || article.description}\n\nQ: ${query}`;
+            const response = await callGemini(prompt, "Answer using provided content.");
+            state.chatHistory.push({ role: 'bot', text: response });
+            renderChat();
+        };
+
+        function renderChat() {
+            const historyEl = document.getElementById('ai-chat-history');
+            historyEl.innerHTML = state.chatHistory.map(msg => `
+                <div class="ai-chat-bubble ${msg.role === 'user' ? 'ai-user' : 'ai-bot'}">${msg.text}</div>
+            `).join('');
+            historyEl.scrollTop = historyEl.scrollHeight;
+        }
+
+        // --- View Rendering ---
+
+        function renderArticles() {
+            const list = document.getElementById('article-list');
+            const shimmer = document.getElementById('shimmer-loader');
+            if (shimmer) shimmer.remove();
+
+            let filtered = state.articles;
+            if (state.selectedCategory !== 'All') filtered = filtered.filter(a => a.category === state.selectedCategory);
+            if (!state.showRead) filtered = filtered.filter(a => !state.readArticles.has(a.id) || state.selectedArticleId === a.id);
+
+            if (filtered.length === 0) {
+                list.innerHTML = `<div class="p-12 text-center text-slate-400 text-sm italic">Stream cleared.</div>`;
+                return;
+            }
+            
+            list.innerHTML = filtered.map(item => {
+                const style = getCategoryStyle(item.category);
+                return `
+                <div class="article-card p-5 border-b border-slate-50 cursor-pointer ${state.selectedArticleId === item.id ? 'active' : ''} ${state.readArticles.has(item.id) ? 'is-read' : ''}" 
+                     onclick="selectArticle('${item.id}')">
+                    <div class="flex justify-between items-start mb-1">
+                        <div class="flex gap-1.5 overflow-hidden">
+                            <span class="text-[9px] font-bold text-white ${style.bg} px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0">${item.category}</span>
+                            <span class="text-[9px] font-bold ${style.text} ${style.light} px-1.5 py-0.5 rounded uppercase tracking-wider truncate">${item.feedTitle}</span>
+                        </div>
+                        <span class="text-[9px] text-slate-400 shrink-0 ml-2">${new Date(item.pubDate).toLocaleDateString()}</span>
+                    </div>
+                    <h4 class="font-bold text-sm text-slate-800 leading-snug line-clamp-2">${item.title}</h4>
+                </div>
+            `;}).join('');
+        }
+
+        window.selectArticle = (id) => {
+            state.selectedArticleId = id;
+            markAsRead(id);
+            state.chatHistory = [];
+            renderChat();
+            const article = state.articles.find(a => a.id === id);
+            if (!article) return;
+            
+            renderArticles();
+            document.getElementById('empty-state').classList.add('hidden');
+            document.getElementById('reader-view').classList.remove('hidden');
+            document.getElementById('content-pane').classList.add('active');
+            
+            const style = getCategoryStyle(article.category);
+            const sourceEl = document.getElementById('reader-source');
+            sourceEl.innerText = `${article.category} / ${article.feedTitle}`;
+            sourceEl.className = `text-[10px] font-black uppercase tracking-widest ${style.text} ${style.light} px-2 py-0.5 rounded`;
+            
+            document.getElementById('reader-title').innerText = article.title;
+            document.getElementById('reader-date').innerText = new Date(article.pubDate).toLocaleString();
+            document.getElementById('reader-original-link').href = article.link;
+            document.getElementById('reader-body').innerHTML = article.content || article.description;
+            document.getElementById('ai-summary').classList.add('hidden');
+            document.getElementById('reader-scroll-container').scrollTop = 0;
+            analyzeSentiment(article);
+        };
+
+        window.closeReader = () => {
+            document.getElementById('content-pane').classList.remove('active');
+            state.selectedArticleId = null;
+            renderArticles();
+        };
 
         function renderSettingsFeedList() {
             const list = document.getElementById('settings-feed-list');
@@ -448,258 +713,6 @@
             list.innerHTML = html || '<p class="text-center py-4 text-xs text-slate-400 italic">No feeds added yet.</p>';
         }
 
-        function addFeedManual() {
-            const input = document.getElementById('new-feed-url');
-            const catSelect = document.getElementById('new-feed-category');
-            const customCatInput = document.getElementById('custom-category-input');
-            const url = input.value.trim();
-            let category = catSelect.value === 'Custom' ? customCatInput.value.trim() : catSelect.value;
-            if (!category) category = "General";
-            if (url && !state.feeds.find(f => f.url === url)) {
-                state.feeds.push({ url, category });
-                saveFeeds();
-                input.value = '';
-                customCatInput.value = '';
-                customCatInput.classList.add('hidden');
-                catSelect.value = "General";
-                renderSettingsFeedList();
-                renderCategoriesFilter();
-                fetchFeeds();
-            }
-        }
-
-        function removeFeed(index) {
-            state.feeds.splice(index, 1);
-            saveFeeds();
-            renderSettingsFeedList();
-            renderCategoriesFilter();
-            fetchFeeds();
-        }
-
-        function saveFeeds() { localStorage.setItem('rss_feeds_v2', JSON.stringify(state.feeds)); }
-
-        function resetFeeds() {
-            if(confirm("Reset all feeds to default?")) {
-                state.feeds = [...DEFAULT_FEEDS];
-                saveFeeds();
-                renderSettingsFeedList();
-                renderCategoriesFilter();
-                fetchFeeds();
-            }
-        }
-
-        function handleOPMLUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            const statusEl = document.getElementById('import-status');
-            statusEl.innerHTML = `<p class="text-xs text-indigo-600">Processing...</p>`;
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                try {
-                    const text = e.target.result;
-                    const parser = new DOMParser();
-                    const xmlDoc = parser.parseFromString(text, "text/xml");
-                    function parseOutlines(node, category = "General") {
-                        let results = [];
-                        const children = node.children;
-                        for (let child of children) {
-                            if (child.tagName === 'outline') {
-                                const title = child.getAttribute('title') || child.getAttribute('text');
-                                const xmlUrl = child.getAttribute('xmlUrl') || child.getAttribute('url');
-                                if (xmlUrl) results.push({ url: xmlUrl, category: category });
-                                else if (title) results = results.concat(parseOutlines(child, title));
-                            }
-                        }
-                        return results;
-                    }
-                    const body = xmlDoc.getElementsByTagName("body")[0];
-                    let addedFeeds = parseOutlines(body);
-                    if (addedFeeds.length > 0) {
-                        addedFeeds.forEach(newFeed => { if (!state.feeds.find(f => f.url === newFeed.url)) state.feeds.push(newFeed); });
-                        saveFeeds();
-                        renderSettingsFeedList();
-                        renderCategoriesFilter();
-                        fetchFeeds();
-                        statusEl.innerHTML = `<p class="text-xs text-emerald-600 font-bold">Imported ${addedFeeds.length} feeds!</p>`;
-                    }
-                } catch (err) { statusEl.innerHTML = `<p class="text-xs text-rose-500">Failed.</p>`; }
-            };
-            reader.readAsText(file);
-        }
-
-        // --- RSS Fetching & Content Logic ---
-
-        async function fetchFeeds() {
-            if (state.feeds.length === 0) { state.articles = []; renderArticles(); return; }
-            state.isRefreshing = true;
-            const refreshIcon = document.getElementById('refresh-icon');
-            if (refreshIcon) refreshIcon.classList.add('animate-spin');
-            try {
-                let allItems = [];
-                const results = await Promise.all(state.feeds.map(feed => 
-                    fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feed.url)}`)
-                        .then(r => r.json())
-                        .then(data => ({ ...data, feedCategory: feed.category }))
-                        .catch(() => ({ status: 'error' }))
-                ));
-                results.forEach(res => {
-                    if (res.status === 'ok') {
-                        allItems.push(...res.items.map(item => ({
-                            ...item,
-                            id: item.guid || item.link,
-                            feedTitle: res.feed.title || new URL(item.link).hostname,
-                            category: res.feedCategory
-                        })));
-                    }
-                });
-                allItems.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
-                state.articles = allItems;
-                localStorage.setItem('rss_cache_v2', JSON.stringify(allItems));
-            } catch (e) { console.error(e); } 
-            finally {
-                state.isRefreshing = false;
-                if (refreshIcon) refreshIcon.classList.remove('animate-spin');
-                renderArticles();
-            }
-        }
-
-        // --- Gemini Functions ---
-
-        async function callGemini(prompt, systemInstruction = "") {
-            let retries = 0;
-            const maxRetries = 5;
-            const run = async () => {
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{ parts: [{ text: prompt }] }],
-                        systemInstruction: { parts: [{ text: systemInstruction }] }
-                    })
-                });
-                const data = await response.json();
-                return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response.";
-            };
-            while (retries < maxRetries) {
-                try { return await run(); } catch (e) {
-                    retries++;
-                    await new Promise(res => setTimeout(res, Math.pow(2, retries) * 1000));
-                }
-            }
-        }
-
-        async function generateSummary() {
-            const article = state.articles.find(a => a.id === state.selectedArticleId);
-            const summaryBox = document.getElementById('ai-summary');
-            const summaryText = document.getElementById('summary-text');
-            summaryBox.classList.remove('hidden');
-            summaryText.innerHTML = `<div class="flex items-center gap-2 text-xs"><div class="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div> Summarizing...</div>`;
-            summaryBox.scrollIntoView({ behavior: 'smooth' });
-            const prompt = `3-bullet summary for: ${article.content || article.description}`;
-            const summary = await callGemini(prompt, "Professional news analyst briefing.");
-            summaryText.innerHTML = summary.replace(/\n/g, '<br>').replace(/- /g, '• ');
-        }
-
-        async function analyzeSentiment(article) {
-            const sentimentEl = document.getElementById('ai-sentiment');
-            const result = await callGemini(`Sentiment (POSITIVE, NEUTRAL, CRITICAL) for: ${article.title}`, "Media sentiment classifier.");
-            const label = result.trim().toUpperCase();
-            sentimentEl.classList.remove('hidden');
-            let theme = label.includes("POSITIVE") ? "bg-emerald-50 text-emerald-700 border-emerald-200" : 
-                        label.includes("CRITICAL") ? "bg-rose-50 text-rose-700 border-rose-200" : 
-                        "bg-slate-50 text-slate-700 border-slate-200";
-            sentimentEl.className = `inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-bold border ${theme}`;
-            sentimentEl.innerText = `✨ AI SENTIMENT: ${label}`;
-        }
-
-        async function handleChat() {
-            const input = document.getElementById('ai-chat-input');
-            const query = input.value.trim();
-            if (!query) return;
-            state.chatHistory.push({ role: 'user', text: query });
-            input.value = "";
-            renderChat();
-            const article = state.articles.find(a => a.id === state.selectedArticleId);
-            const prompt = `Context: ${article.content || article.description}\n\nQ: ${query}`;
-            const response = await callGemini(prompt, "Answer using provided content.");
-            state.chatHistory.push({ role: 'bot', text: response });
-            renderChat();
-        }
-
-        function renderChat() {
-            const historyEl = document.getElementById('ai-chat-history');
-            historyEl.innerHTML = state.chatHistory.map(msg => `
-                <div class="ai-chat-bubble ${msg.role === 'user' ? 'ai-user' : 'ai-bot'}">${msg.text}</div>
-            `).join('');
-            historyEl.scrollTop = historyEl.scrollHeight;
-        }
-
-        // --- UI Rendering ---
-
-        function renderArticles() {
-            const list = document.getElementById('article-list');
-            const shimmer = document.getElementById('shimmer-loader');
-            if (shimmer) shimmer.remove();
-
-            let filtered = state.articles;
-            if (state.selectedCategory !== 'All') filtered = filtered.filter(a => a.category === state.selectedCategory);
-            if (!state.showRead) filtered = filtered.filter(a => !state.readArticles.has(a.id) || state.selectedArticleId === a.id);
-
-            if (filtered.length === 0) {
-                list.innerHTML = `<div class="p-12 text-center text-slate-400 text-sm italic">Stream cleared.</div>`;
-                return;
-            }
-            
-            list.innerHTML = filtered.map(item => {
-                const style = getCategoryStyle(item.category);
-                return `
-                <div class="article-card p-5 border-b border-slate-50 cursor-pointer ${state.selectedArticleId === item.id ? 'active' : ''} ${state.readArticles.has(item.id) ? 'is-read' : ''}" 
-                     onclick="selectArticle('${item.id}')">
-                    <div class="flex justify-between items-start mb-1">
-                        <div class="flex gap-1.5 overflow-hidden">
-                            <span class="text-[9px] font-bold text-white ${style.bg} px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0">${item.category}</span>
-                            <span class="text-[9px] font-bold ${style.text} ${style.light} px-1.5 py-0.5 rounded uppercase tracking-wider truncate">${item.feedTitle}</span>
-                        </div>
-                        <span class="text-[9px] text-slate-400 shrink-0 ml-2">${new Date(item.pubDate).toLocaleDateString()}</span>
-                    </div>
-                    <h4 class="font-bold text-sm text-slate-800 leading-snug line-clamp-2">${item.title}</h4>
-                </div>
-            `;}).join('');
-        }
-
-        function selectArticle(id) {
-            state.selectedArticleId = id;
-            markAsRead(id);
-            state.chatHistory = [];
-            renderChat();
-            const article = state.articles.find(a => a.id === id);
-            if (!article) return;
-            
-            renderArticles();
-            document.getElementById('empty-state').classList.add('hidden');
-            document.getElementById('reader-view').classList.remove('hidden');
-            document.getElementById('content-pane').classList.add('active');
-            
-            const style = getCategoryStyle(article.category);
-            const sourceEl = document.getElementById('reader-source');
-            sourceEl.innerText = `${article.category} / ${article.feedTitle}`;
-            sourceEl.className = `text-[10px] font-black uppercase tracking-widest ${style.text} ${style.light} px-2 py-0.5 rounded`;
-            
-            document.getElementById('reader-title').innerText = article.title;
-            document.getElementById('reader-date').innerText = new Date(article.pubDate).toLocaleString();
-            document.getElementById('reader-original-link').href = article.link;
-            document.getElementById('reader-body').innerHTML = article.content || article.description;
-            document.getElementById('ai-summary').classList.add('hidden');
-            document.getElementById('reader-scroll-container').scrollTop = 0;
-            analyzeSentiment(article);
-        }
-
-        function closeReader() {
-            document.getElementById('content-pane').classList.remove('active');
-            state.selectedArticleId = null;
-            renderArticles();
-        }
-
         // Pull to Refresh
         let startY = 0;
         window.addEventListener('touchstart', (e) => {
@@ -716,15 +729,13 @@
             document.getElementById('pull-indicator').style.transform = `translateX(-50%) translateY(-50px)`;
         });
 
-        document.getElementById('ai-summarize-btn').onclick = generateSummary;
-        document.getElementById('ai-chat-send').onclick = handleChat;
-        document.getElementById('ai-chat-input').onkeypress = (e) => { if (e.key === 'Enter') handleChat(); };
+        document.getElementById('ai-summarize-btn').onclick = () => window.generateSummary();
+        document.getElementById('ai-chat-send').onclick = () => window.handleChat();
+        document.getElementById('ai-chat-input').onkeypress = (e) => { if (e.key === 'Enter') window.handleChat(); };
 
         window.onload = () => {
-            const cache = localStorage.getItem('rss_cache_v2');
-            if (cache) { state.articles = JSON.parse(cache); renderArticles(); }
+            initAuth();
             renderCategoriesFilter();
-            fetchFeeds();
         };
     </script>
 </body>
